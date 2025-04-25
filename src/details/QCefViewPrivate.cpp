@@ -1,8 +1,8 @@
-#include "QCefViewPrivate.h"
+﻿#include "QCefViewPrivate.h"
 
-#pragma region std_headers
+#pragma region stl_headers
 #include <stdexcept>
-#pragma endregion std_headers
+#pragma endregion
 
 #pragma region qt_headers
 #include <QApplication>
@@ -12,15 +12,16 @@
 #include <QGridLayout>
 #include <QInputMethodQueryEvent>
 #include <QPainter>
+#include <QStyleOption>
 #include <QWindow>
-#pragma endregion qt_headers
+#pragma endregion
 
 #pragma region cef_headers
 #include <include/cef_app.h>
 #include <include/cef_browser.h>
 #include <include/cef_frame.h>
 #include <include/cef_parser.h>
-#pragma endregion cef_headers
+#pragma endregion
 
 #include <CefViewCoreProtocol.h>
 
@@ -43,10 +44,7 @@ QCefViewPrivate::destroyAllInstance()
   }
 }
 
-QCefViewPrivate::QCefViewPrivate(QCefContextPrivate* ctx,
-                                 QCefView* view,
-                                 const QString& url,
-                                 const QCefSetting* setting)
+QCefViewPrivate::QCefViewPrivate(QCefContextPrivate* ctx, QCefView* view)
   : q_ptr(view)
   , pContextPrivate_(ctx)
 {
@@ -61,51 +59,116 @@ QCefViewPrivate::~QCefViewPrivate()
 }
 
 void
-QCefViewPrivate::createCefBrowser(QCefView* view, const QString& url, const QCefSetting* setting)
+QCefViewPrivate::createCefBrowser(QCefView* view, const QString& url, const QCefSettingPrivate* setting)
 {
-  // create browser client handler delegate
+  // 1. create browser client handler delegate
   auto pClientDelegate = std::make_shared<CCefClientDelegate>(this);
 
-  // create browser client handler
+  // 2. create browser client handler
   auto pClient = new CefViewBrowserClient(pContextPrivate_->getCefApp(), pClientDelegate);
 
-  for (auto& folderMapping : pContextPrivate_->folderResourceMappingList()) {
-    pClient->AddLocalDirectoryResourceProvider(
-      folderMapping.path.toStdString(), folderMapping.url.toStdString(), folderMapping.priority);
-  }
+  // 3. create the browser settings
+  CefBrowserSettings browserSettings;
+  QCefSettingPrivate::CopyToCefBrowserSettings(setting, &browserSettings);
 
-  for (auto& archiveMapping : pContextPrivate_->archiveResourceMappingList()) {
-    pClient->AddArchiveResourceProvider(archiveMapping.path.toStdString(),
-                                        archiveMapping.url.toStdString(),
-                                        archiveMapping.password.toStdString(),
-                                        archiveMapping.priority);
-  }
-
-  // Set window info
+  // 4. set window info
   CefWindowInfo windowInfo;
-
   if (isOSRModeEnabled_) {
-    // OSR mode
-    windowInfo.SetAsWindowless(0);
-  } else {
-    // create CEF browser parent window
-    auto initSize = q_ptr->size();
-    if (setting) {
-      initSize = setting->initSize();
+    auto winSize = q_ptr->size();
+    auto winBgColor = browserSettings.background_color;
+
+    // set QWidget background
+    QPalette palette = q_ptr->palette();
+    palette.setColor(q_ptr->backgroundRole(),         //
+                     QColor(CefColorGetR(winBgColor), //
+                            CefColorGetG(winBgColor), //
+                            CefColorGetB(winBgColor), //
+                            CefColorGetA(winBgColor)) //
+    );
+    q_ptr->setPalette(palette);
+
+    std::shared_ptr<ICefViewRenderer> renderer;
+#if defined(OS_WINDOWS) || defined(OS_MACOS)
+    // if hardware is enabled
+    if (setting && setting->hardwareAcceleration_) {
+#if CEF_VERSION_MAJOR >= 125
+      // create hardware renderer if enabled
+      if ((renderer = CefViewRendererFactory::createRenderer(true))) {
+        // get window native handle
+        auto wid = reinterpret_cast<void*>(view->winId());
+
+        // initialize renderer
+        if (renderer->initialize(wid,              //
+                                 winSize.width(),  //
+                                 winSize.height(), //
+                                 scaleFactor(),    //
+                                 winBgColor        //
+                                 )) {
+          // OSR with hardware renderer
+          osr.pRenderer_ = renderer;
+          windowInfo.SetAsWindowless(0);
+          windowInfo.shared_texture_enabled = true;
+        } else {
+          qWarning() << "Failed to initialize hardware renderer, will fallback to software renderer";
+        }
+      } else {
+        qWarning() << "Failed to create hardware renderer, will fallback to software renderer";
+      }
+    } else {
+      qInfo() << "Hardware Acceleration is disabled";
+#else
+      qWarning() << "Hardware Acceleration is supported only on CEF version 125+";
+#endif
     }
-    qDebug() << "Browser init size:" << initSize;
+#endif
+
+    // if hardware renderer is not enabled or failed to create it
+    // fallback to software renderer
+    if (!osr.pRenderer_) {
+      // create software renderer
+      if ((renderer = CefViewRendererFactory::createRenderer(false))) {
+        // initialize renderer
+        auto ws = q_ptr->size();
+        if (renderer->initialize(nullptr,          //
+                                 winSize.width(),  //
+                                 winSize.height(), //
+                                 scaleFactor(),    //
+                                 winBgColor        //
+                                 )) {
+          // OSR with software renderer
+          osr.pRenderer_ = renderer;
+          windowInfo.SetAsWindowless(0);
+          windowInfo.shared_texture_enabled = false;
+        } else {
+          qWarning() << "Failed to initialize hardware renderer";
+        }
+      } else {
+        qWarning() << "Failed to create hardware renderer";
+      }
+    }
+
+    if (!osr.pRenderer_) {
+      // all renderer were failed to create or initialize
+      // I don't know what to do
+    }
+  } else {
+#if CEF_VERSION_MAJOR >= 125
+    // https://github.com/chromiumembedded/cef/issues/3685
+    windowInfo.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
+#endif
+    // create CEF browser parent window
+    auto windowInitialSize = q_ptr->size();
+    if (setting) {
+      windowInitialSize = setting->windowInitialSize_;
+    }
+    qDebug() << "Browser init size:" << windowInitialSize;
 
     ncw.qBrowserWindow_ = new QCefWindow();
-    ncw.qBrowserWindow_->resize(initSize);
+    ncw.qBrowserWindow_->resize(windowInitialSize);
     ncw.qBrowserWindow_->setFlags(Qt::Window | Qt::FramelessWindowHint);
 
-#if (QT_VERSION >= QT_VERSION_CHECK(5, 6, 0))
-    qreal scaleFactor = q_ptr->devicePixelRatioF();
-#else
-    qreal scaleFactor = q_ptr->devicePixelRatio();
-#endif
-    auto width = initSize.width() * scaleFactor;
-    auto height = initSize.height() * scaleFactor;
+    auto width = windowInitialSize.width() * scaleFactor();
+    auto height = windowInitialSize.height() * scaleFactor();
 #if CEF_VERSION_MAJOR > 85
     windowInfo.SetAsChild((CefWindowHandle)ncw.qBrowserWindow_->winId(), { 0, 0, (int)width, (int)height });
 #else
@@ -113,17 +176,7 @@ QCefViewPrivate::createCefBrowser(QCefView* view, const QString& url, const QCef
 #endif
   }
 
-  // create the browser settings
-  CefBrowserSettings browserSettings;
-  QCefSettingPrivate::CopyToCefBrowserSettings(setting, &browserSettings);
-
-  if (isOSRModeEnabled_) {
-    // OSR mode
-    if (CefColorGetA(browserSettings.background_color) == 0)
-      osr.transparentPaintingEnabled = true;
-  }
-
-  // create browser object
+  // 5. create browser object
   bool success = CefBrowserHost::CreateBrowser(windowInfo,        // window info
                                                pClient,           // handler
                                                url.toStdString(), // url
@@ -132,7 +185,7 @@ QCefViewPrivate::createCefBrowser(QCefView* view, const QString& url, const QCef
                                                CefRequestContext::GetGlobalContext());
   Q_ASSERT_X(success, "QCefViewPrivate::createBrowser", "Failed to create cef browser");
   if (!success) {
-    qWarning("Failed to create cef browser");
+    qWarning() << "Failed to create cef browser";
     return;
   }
 
@@ -194,12 +247,6 @@ QCefViewPrivate::setCefWindowFocus(bool focus)
   }
 }
 
-bool
-QCefViewPrivate::isOSRModeEnabled() const
-{
-  return isOSRModeEnabled_;
-}
-
 QCefQuery
 QCefViewPrivate::createQuery(const QString& req, const int64_t id)
 {
@@ -232,7 +279,6 @@ QCefViewPrivate::onCefBrowserCreated(CefRefPtr<CefBrowser> browser, QWindow* win
     // notify the visibility and size
     pCefBrowser_->GetHost()->WasHidden(!q_ptr->isVisible());
     pCefBrowser_->GetHost()->WasResized();
-    connect(this, SIGNAL(updateOsrFrame()), q_ptr, SLOT(update()));
   } else {
     // emit signal
     emit q_ptr->nativeBrowserCreated(window);
@@ -273,7 +319,7 @@ QCefViewPrivate::onCefBrowserCreated(CefRefPtr<CefBrowser> browser, QWindow* win
 }
 
 bool
-QCefViewPrivate::onBeforeNewBrowserCreate(qint64 sourceFrameId,
+QCefViewPrivate::onBeforeNewBrowserCreate(const QCefFrameId& sourceFrameId,
                                           const QString& targetUrl,
                                           const QString& targetFrameName,
                                           QCefView::CefWindowOpenDisposition targetDisposition,
@@ -294,7 +340,7 @@ QCefViewPrivate::onBeforeNewBrowserCreate(qint64 sourceFrameId,
 }
 
 bool
-QCefViewPrivate::onBeforeNewPopupCreate(qint64 sourceFrameId,
+QCefViewPrivate::onBeforeNewPopupCreate(const QCefFrameId& sourceFrameId,
                                         const QString& targetUrl,
                                         QString& targetFrameName,
                                         QCefView::CefWindowOpenDisposition targetDisposition,
@@ -347,7 +393,12 @@ QCefViewPrivate::handleLoadError(CefRefPtr<CefBrowser>& browser,
   if (q->receivers(SIGNAL(loadError(int, qint64, bool, int, const QString&, const QString&))) > 0) {
     auto msg = QString::fromStdString(errorMsg);
     auto url = QString::fromStdString(failedUrl);
-    emit q->loadError(browser->GetIdentifier(), frame->GetIdentifier(), frame->IsMain(), errorCode, msg, url);
+    emit q->loadError(browser->GetIdentifier(),
+                      ValueConvertor::FrameIdC2Q(frame->GetIdentifier()),
+                      frame->IsMain(),
+                      errorCode,
+                      msg,
+                      url);
     return true;
   }
 
@@ -360,6 +411,38 @@ QCefViewPrivate::requestCloseFromWeb(CefRefPtr<CefBrowser>& browser)
   Q_Q(QCefView);
 
   return q->onRequestCloseFromWeb();
+}
+
+void
+QCefViewPrivate::render(QPainter* painter)
+{
+  Q_Q(QCefView);
+
+  if (isOSRModeEnabled_) {
+    if (osr.pRenderer_->isHardware()) {
+      // render cef view
+      osr.pRenderer_->render(nullptr);
+    } else {
+      // paint widget with its stylesheet
+      QStyleOption opt;
+      opt.initFrom(q);
+      q->style()->drawPrimitive(QStyle::PE_Widget, &opt, painter, q);
+
+      // render cef view
+      osr.pRenderer_->render(painter);
+    }
+  }
+}
+
+qreal
+QCefViewPrivate::scaleFactor()
+{
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 6, 0))
+  qreal scaleFactor = q_ptr->devicePixelRatioF();
+#else
+  qreal scaleFactor = q_ptr->devicePixelRatio();
+#endif
+  return scaleFactor;
 }
 
 void
@@ -429,6 +512,11 @@ QCefViewPrivate::onCefWindowLostTabFocus(bool next)
     widget->setFocus(reason);
     widget->activateWindow();
   }
+
+  // update cef focus status
+  if (isOSRModeEnabled_) {
+    osr.hasCefGotFocus_ = false;
+  }
 }
 
 void
@@ -439,6 +527,11 @@ QCefViewPrivate::onCefWindowGotFocus()
   QWidget* focusedWidget = qApp->focusWidget();
   if (focusedWidget && focusedWidget != q) {
     focusedWidget->clearFocus();
+  }
+
+  // update cef focus status
+  if (isOSRModeEnabled_) {
+    osr.hasCefGotFocus_ = true;
   }
 }
 
@@ -470,22 +563,6 @@ QCefViewPrivate::onOsrImeCursorRectChanged(const QRect& rc)
 }
 
 void
-QCefViewPrivate::onOsrShowPopup(bool show)
-{
-  osr.showPopup_ = show;
-
-  // clear the previous popup frame data if exist
-  osr.qCefPopupFrame_ = QImage();
-  osr.qPopupRect_ = QRect();
-}
-
-void
-QCefViewPrivate::onOsrResizePopup(const QRect& rc)
-{
-  osr.qPopupRect_ = rc;
-}
-
-void
 QCefViewPrivate::onContextMenuTriggered(QAction* action)
 {
   FLog();
@@ -514,55 +591,6 @@ QCefViewPrivate::onContextMenuDestroyed(QObject* obj)
   }
 
   osr.isShowingContextMenu_ = false;
-}
-
-void
-QCefViewPrivate::onOsrUpdateViewFrame(const QImage& frame, const QRegion& region)
-{
-  // #if defined(QT_DEBUG)
-  //   qint64 elapsedMs = paintTimer_.restart();
-  //   // qDebug() << "===== CEF view frame update since last frame:" << elapsedMs;
-  //   if (elapsedMs >= 20)
-  //     qDebug() << "===== CEF view frame update stutter detected:" << elapsedMs;
-  //
-  //   QElapsedTimer updateDurationTimer;
-  //   updateDurationTimer.start();
-  // #endif
-
-  if (osr.qCefViewFrame_.size() != frame.size() || osr.transparentPaintingEnabled) {
-    // update full image
-    QMutexLocker lock(&(osr.qViewPaintLock_));
-    osr.qCefViewFrame_ = frame.copy();
-  } else {
-    QMutexLocker lock(&(osr.qViewPaintLock_));
-    // update only dirty regions
-    QPainter painter(&osr.qCefViewFrame_);
-    for (auto& rc : region) {
-      painter.drawImage(rc, frame, rc);
-    }
-  }
-  emit updateOsrFrame();
-
-  // #if defined(QT_DEBUG)
-  //   qDebug() << "===== CEF frame update duration:" << elapsedMs;
-  // #endif
-}
-
-void
-QCefViewPrivate::onOsrUpdatePopupFrame(const QImage& frame, const QRegion& region)
-{
-  if (osr.qCefPopupFrame_.size() == frame.size()) {
-    QMutexLocker lock(&(osr.qPopupPaintLock_));
-    // update region
-    QPainter painter(&osr.qCefPopupFrame_);
-    for (auto& rc : region) {
-      painter.drawImage(rc, frame, rc);
-    }
-  } else {
-    QMutexLocker lock(&(osr.qPopupPaintLock_));
-    osr.qCefPopupFrame_ = frame.copy();
-  }
-  emit updateOsrFrame();
 }
 
 void
@@ -617,9 +645,9 @@ QCefViewPrivate::onCefContextMenuDismissed()
 
 void
 QCefViewPrivate::onFileDialog(CefBrowserHost::FileDialogMode mode,
-                              const CefString& title,
-                              const CefString& default_file_path,
-                              const std::vector<CefString>& accept_filters,
+                              const QString& title,
+                              const QString& default_file_path,
+                              const QStringList& accept_filters,
 #if CEF_VERSION_MAJOR < 102
                               int selected_accept_filter,
 #endif
@@ -644,41 +672,30 @@ QCefViewPrivate::onFileDialog(CefBrowserHost::FileDialogMode mode,
   }
 
   // set title
-  QString caption;
-  if (!title.empty()) {
-    caption = title.ToString().c_str();
-    dialog.setWindowTitle(caption);
+  if (!title.isEmpty()) {
+    dialog.setWindowTitle(title);
   }
 
   // set initial folder
-  if (!default_file_path.empty() && mode == FILE_DIALOG_SAVE) {
-    QDir dir(QString::fromStdString(default_file_path.ToString()));
-    if (dir.exists()) {
-      dialog.setDirectory(dir);
-    } else {
-      dialog.setDirectory(QDir::homePath());
-    }
+  if (!default_file_path.isEmpty() && mode == FILE_DIALOG_SAVE) {
+    QFileInfo fileInfo(default_file_path);
+    dialog.setDirectory(fileInfo.dir());
+    dialog.selectFile(fileInfo.fileName());
   }
 
   // set accepted file types
-  QStringList filters;
-  if (!accept_filters.empty()) {
-    for (const auto& filter : accept_filters) {
-      filters << "*" + QString::fromStdString(filter.ToString());
-    }
-    dialog.setNameFilters(filters);
-  }
+  dialog.setNameFilters(accept_filters);
 
   // execute the dialog
   if (dialog.exec()) {
     std::vector<CefString> file_paths;
     auto selected_files = dialog.selectedFiles();
     for (const auto& file : selected_files) {
-      file_paths.push_back(file.toStdString());
+      file_paths.push_back(QDir::toNativeSeparators(file).toStdString());
     }
 
 #if CEF_VERSION_MAJOR < 102
-    int index = filters.indexOf(dialog.selectedNameFilter());
+    int index = accept_filters.indexOf(dialog.selectedNameFilter());
     callback->Continue(index, file_paths);
 #else
     callback->Continue(file_paths);
@@ -810,6 +827,37 @@ QCefViewPrivate::onViewInputMethodQuery(Qt::InputMethodQuery query) const
 }
 
 void
+QCefViewPrivate::onPaintEngine(QPaintEngine*& engine) const
+{
+  // if hardware acceleration is available then disable Qt paint
+  if (isOSRModeEnabled_ && osr.pRenderer_ && osr.pRenderer_->isHardware()) {
+    engine = nullptr;
+  }
+}
+
+void
+QCefViewPrivate::onPaintEvent(QPaintEvent* event)
+{
+  Q_Q(QCefView);
+
+  if (osr.pRenderer_ && osr.pRenderer_->isHardware()) {
+    // hardware renderer, there's no painter
+    render(nullptr);
+  } else {
+    // 1. construct painter for current widget
+    QPainter painter(q);
+
+    // 2. paint background with background role
+    // for OSR mode, this makes sure the surface will be cleared before a new drawing
+    // for NCW mode, this makes sure QCefView will not be treated as transparent background
+    painter.fillRect(q->rect(), q->palette().color(q->backgroundRole()));
+
+    // 3. render self
+    render(&painter);
+  }
+}
+
+void
 QCefViewPrivate::onViewInputMethodEvent(QInputMethodEvent* event)
 {
   if (isOSRModeEnabled_) {
@@ -894,10 +942,27 @@ QCefViewPrivate::onViewFocusChanged(bool focused)
     // OSR mode
     if (!pCefBrowser_)
       return;
+
     if (focused) {
+      // QCefView gained the focus
+
+      // sync the focus status to CEF browser
       pCefBrowser_->GetHost()->SetFocus(focused);
-    } else if (!osr.isShowingContextMenu_) {
+
+      // update cef focus status
+      osr.hasCefGotFocus_ = true;
+    } else {
+      // QCefView released the focus
+
+      // if the context menu is showing we do not clear CEF browser focus
+      if (osr.isShowingContextMenu_)
+        return;
+
+      // clear CEF browser focus for any other reasons
       pCefBrowser_->GetHost()->SetFocus(focused);
+
+      // update cef focus status
+      osr.hasCefGotFocus_ = false;
     }
   }
 }
@@ -907,12 +972,20 @@ QCefViewPrivate::onViewSizeChanged(const QSize& size, const QSize& oldSize)
 {
   if (isOSRModeEnabled_) {
     // OSR mode
-    if (pCefBrowser_)
+    if (osr.pRenderer_) {
+      // reset render
+      osr.pRenderer_->resize(size.width(), size.height(), scaleFactor());
+    }
+
+    if (pCefBrowser_) {
+      // notify CEF of the size changing
       pCefBrowser_->GetHost()->WasResized();
+    }
   } else {
     Q_Q(QCefView);
-    if (ncw.qBrowserWindow_)
+    if (ncw.qBrowserWindow_) {
       ncw.qBrowserWindow_->applyMask(q->mask());
+    }
   }
 }
 
@@ -1038,11 +1111,25 @@ QCefViewPrivate::onViewWheelEvent(QWheelEvent* event)
     e.x = p.x();
     e.y = p.y();
 
-    // angleDelta().y() provides the angle through which the common vertical mouse wheel was rotated since the previous
-    // event. angleDelta().x() provides the angle through which the horizontal mouse wheel was rotated, if the mouse has
-    // a horizontal wheel; otherwise it stays at zero.
-    pCefBrowser_->GetHost()->SendMouseWheelEvent(
-      e, m & Qt::ShiftModifier ? d.x() : 0, m & Qt::ShiftModifier ? d.y() : d.y());
+    // Prevent diagonal scrolling: only allow scrolling in one direction at a time
+    if (qAbs(d.x()) > qAbs(d.y())) {
+      d.setY(0);
+    } else {
+      d.setX(0);
+    }
+
+    pCefBrowser_->GetHost()->SendMouseWheelEvent(e, d.x(), d.y());
+  }
+}
+
+void
+QCefViewPrivate::onContextMenuEvent(const QPoint& pos)
+{
+  if (isOSRModeEnabled_) {
+    // OSR mode
+    if (osr.isShowingContextMenu_) {
+      osr.contextMenu_->popup(pos);
+    }
   }
 }
 
@@ -1136,7 +1223,7 @@ QCefViewPrivate::browserStopLoad()
 bool
 QCefViewPrivate::triggerEvent(const QString& name,
                               const QVariantList& args,
-                              int64_t frameId /*= CefViewBrowserHandler::MAIN_FRAME*/)
+                              const QCefFrameId& frameId /*= QCefView::MainFrameID*/)
 {
   if (!name.isEmpty()) {
     return sendEventNotifyMessage(frameId, name, args);
@@ -1169,13 +1256,25 @@ QCefViewPrivate::responseQCefQuery(const int64_t query, bool success, const QStr
 }
 
 bool
-QCefViewPrivate::executeJavascript(int64_t frameId, const QString& code, const QString& url)
+QCefViewPrivate::executeJavascript(const QCefFrameId& frameId, const QString& code, const QString& url)
 {
   if (code.isEmpty())
     return false;
 
   if (pCefBrowser_) {
-    auto frame = frameId == 0 ? pCefBrowser_->GetMainFrame() : pCefBrowser_->GetFrame(frameId);
+    // convert frame id
+    auto fid = ValueConvertor::FrameIdQ2C(frameId);
+    // get frame instance
+    auto frame = (frameId == QCefView::MainFrameID) ? //
+                   pCefBrowser_->GetMainFrame()       // get main frame
+                                                    : //
+#if CEF_VERSION_MAJOR < 122                           // get frame by id
+                   pCefBrowser_->GetFrame(fid);
+#else
+                   pCefBrowser_->GetFrameByIdentifier(fid);
+#endif
+
+    // validate frame instance
     if (!frame)
       return false;
 
@@ -1197,7 +1296,7 @@ QCefViewPrivate::executeJavascript(int64_t frameId, const QString& code, const Q
 }
 
 bool
-QCefViewPrivate::executeJavascriptWithResult(int64_t frameId,
+QCefViewPrivate::executeJavascriptWithResult(const QCefFrameId& frameId,
                                              const QString& code,
                                              const QString& url,
                                              const QString& context)
@@ -1206,7 +1305,19 @@ QCefViewPrivate::executeJavascriptWithResult(int64_t frameId,
     return false;
 
   if (pClient_ && pCefBrowser_) {
-    auto frame = frameId == 0 ? pCefBrowser_->GetMainFrame() : pCefBrowser_->GetFrame(frameId);
+    // convert frame id
+    auto fid = ValueConvertor::FrameIdQ2C(frameId);
+    // get frame instance
+    auto frame = (frameId == QCefView::MainFrameID) ? //
+                   pCefBrowser_->GetMainFrame()       // get main frame
+                                                    : //
+#if CEF_VERSION_MAJOR < 122                           // get frame by id
+                   pCefBrowser_->GetFrame(fid);
+#else
+                   pCefBrowser_->GetFrameByIdentifier(fid);
+#endif
+
+    // validate frame instance
     if (!frame)
       return false;
 
@@ -1241,7 +1352,7 @@ QCefViewPrivate::notifyMoveOrResizeStarted()
 }
 
 bool
-QCefViewPrivate::sendEventNotifyMessage(int64_t frameId, const QString& name, const QVariantList& args)
+QCefViewPrivate::sendEventNotifyMessage(const QCefFrameId& frameId, const QString& name, const QVariantList& args)
 {
   if (!pClient_) {
     return false;
@@ -1271,7 +1382,7 @@ QCefViewPrivate::sendEventNotifyMessage(int64_t frameId, const QString& name, co
     arguments->SetValue(idx++, cVal);
   }
 
-  return pClient_->TriggerEvent(pCefBrowser_, frameId, msg);
+  return pClient_->TriggerEvent(pCefBrowser_, ValueConvertor::FrameIdQ2C(frameId), msg);
 }
 
 bool

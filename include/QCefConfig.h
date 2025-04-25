@@ -16,7 +16,7 @@
 #include <QScopedPointer>
 #include <QString>
 #include <QVariant>
-#pragma endregion qt_headers
+#pragma endregion
 
 class QCefConfigPrivate;
 
@@ -105,6 +105,18 @@ public:
   /// </summary>
   /// <returns>The flag indicates the enable/disable of OSR mode</returns>
   const QVariant WindowlessRenderingEnabled() const;
+
+  /// <summary>
+  /// Sets the flag to disable the command line pass through
+  /// </summary>
+  /// <param name="disabled">True to disable the command line pass through, false to enable</param>
+  void setCommandLinePassthroughDisabled(const bool disabled);
+
+  /// <summary>
+  /// Gets the flag of disable command line pass through
+  /// </summary>
+  /// <returns>The flag indicates the enable/disable of OSR mode</returns>
+  const QVariant commandLinePassthroughDisabled() const;
 
 #if !defined(Q_OS_MACOS)
   /// <summary>
@@ -233,6 +245,20 @@ public:
   const QString bridgeObjectName() const;
 
   /// <summary>
+  /// Sets the built-in scheme name
+  /// </summary>
+  /// <param name="name">The scheme name</param>
+  /// <remarks>
+  /// The default value is CefView
+  /// </remarks>
+  void setBuiltinSchemeName(const QString& name);
+
+  /// <summary>
+  /// Gets the built-in scheme object name
+  /// </summary>
+  const QString builtinSchemeName() const;
+
+  /// <summary>
   /// Sets the background color of the web page
   /// </summary>
   /// <param name="color">The color to be set</param>
@@ -251,7 +277,7 @@ public:
   /// <summary>
   /// Sets the acceptable language list
   /// </summary>
-  /// <param name="languages">Comma delimited ordered list of language codes without any whitespace 
+  /// <param name="languages">Comma delimited ordered list of language codes without any whitespace
   /// that will be used in the "Accept-Language" HTTP header.</param>
   void setAcceptLanguageList(const QString& languages);
 
@@ -271,6 +297,7 @@ public:
   /// </summary>
   const QVariant persistSessionCookies() const;
 
+#if CEF_VERSION_MAJOR < 128
   /// <summary>
   /// Sets whether to persist user preferences
   /// </summary>
@@ -281,6 +308,7 @@ public:
   /// Gets whether to persist user preferences
   /// </summary>
   const QVariant persistUserPreferences() const;
+#endif
 
   /// <summary>
   /// Sets the remote debugging port

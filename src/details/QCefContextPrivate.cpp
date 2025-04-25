@@ -1,12 +1,12 @@
-﻿#include "QCefContextPrivate.h"
+#include "QCefContextPrivate.h"
 
 #pragma region qt_headers
 #include <QThread>
-#pragma endregion qt_headers
+#pragma endregion
 
 #pragma region cef_headers
 #include <include/cef_origin_whitelist.h>
-#pragma endregion cef_headers
+#pragma endregion
 
 #include <QCefContext.h>
 
@@ -20,13 +20,13 @@ const int64_t kCefWorkerIntervalMs = (1000 / 60); // 60 fps
 QCefContextPrivate::QCefContextPrivate(QCoreApplication* app, int argc, char** argv)
   : argc_(argc)
   , argv_(argv)
+  , config_(nullptr)
 {
 #if defined(Q_OS_MACOS) || defined(CEF_USE_QT_EVENT_LOOP)
   cefWorkerTimer_.setTimerType(Qt::PreciseTimer);
-  cefWorkerTimer_.start(kCefWorkerIntervalMs);
   connect(&cefWorkerTimer_, SIGNAL(timeout()), this, SLOT(performCefLoopWork()));
 #endif
-
+  
   connect(app, SIGNAL(aboutToQuit()), this, SLOT(onAboutToQuit()));
 }
 
@@ -42,9 +42,15 @@ bool
 QCefContextPrivate::initialize(const QCefConfig* config)
 {
   config_ = config;
+
+  // initialize CEF
   if (!initializeCef(config)) {
     return false;
   }
+  
+#if defined(Q_OS_MACOS) || defined(CEF_USE_QT_EVENT_LOOP)
+  cefWorkerTimer_.start(kCefWorkerIntervalMs);
+#endif
 
   return true;
 }
@@ -58,13 +64,7 @@ QCefContextPrivate::cefConfig() const
 void
 QCefContextPrivate::addLocalFolderResource(const QString& path, const QString& url, int priority /*= 0*/)
 {
-  folderResourceMappingList_.append({ path, url, priority });
-}
-
-const QList<FolderResourceMapping>&
-QCefContextPrivate::folderResourceMappingList()
-{
-  return folderResourceMappingList_;
+  pApp_->AddLocalFolderResource(path.toStdString(), url.toStdString(), priority);
 }
 
 void
@@ -73,13 +73,7 @@ QCefContextPrivate::addArchiveResource(const QString& path,
                                        const QString& password /*= ""*/,
                                        int priority /*= 0*/)
 {
-  archiveResourceMappingList_.append({ path, url, password, priority });
-}
-
-const QList<ArchiveResourceMapping>&
-QCefContextPrivate::archiveResourceMappingList()
-{
-  return archiveResourceMappingList_;
+  pApp_->AddArchiveResource(path.toStdString(), url.toStdString(), password.toStdString(), priority);
 }
 
 bool
@@ -143,12 +137,16 @@ QCefContextPrivate::scheduleCefLoopWork(int64_t delayMs)
 {
   // calculate the effective delay number
   auto delay = qMax((int64_t)0, qMin(delayMs, kCefWorkerIntervalMs));
-  QTimer::singleShot(delay, this, SLOT(performCefLoopWork()));
+  QTimer::singleShot(static_cast<int>(delay), this, SLOT(performCefLoopWork()));
 }
 
 void
 QCefContextPrivate::onAboutToQuit()
 {
+  if (!pApp_) {
+    return;
+  }
+  
   // close all live browsers
   QCefViewPrivate::destroyAllInstance();
 

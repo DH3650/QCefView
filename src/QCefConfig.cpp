@@ -59,6 +59,20 @@ QCefConfig::WindowlessRenderingEnabled() const
   return d->windowlessRenderingEnabled_;
 }
 
+void
+QCefConfig::setCommandLinePassthroughDisabled(const bool disabled)
+{
+  Q_D(QCefConfig);
+  d->commandLinePassthroughDisabled_ = disabled;
+}
+
+const QVariant
+QCefConfig::commandLinePassthroughDisabled() const
+{
+  Q_D(const QCefConfig);
+  return d->commandLinePassthroughDisabled_;
+}
+
 #if !defined(Q_OS_MACOS)
 void
 QCefConfig::setBrowserSubProcessPath(const QString& path)
@@ -206,6 +220,20 @@ QCefConfig::bridgeObjectName() const
 }
 
 void
+QCefConfig::setBuiltinSchemeName(const QString& name)
+{
+  Q_D(QCefConfig);
+  d->builtinSchemeName_ = name.toStdString();
+}
+
+const QString
+QCefConfig::builtinSchemeName() const
+{
+  Q_D(const QCefConfig);
+  return QString::fromStdString(d->builtinSchemeName_);
+}
+
+void
 QCefConfig::setBackgroundColor(const QColor& color)
 {
   Q_D(QCefConfig);
@@ -247,6 +275,7 @@ QCefConfig::persistSessionCookies() const
   return d->persistSessionCookies_;
 }
 
+#if CEF_VERSION_MAJOR < 128
 void
 QCefConfig::setPersistUserPreferences(bool enabled)
 {
@@ -260,6 +289,7 @@ QCefConfig::persistUserPreferences() const
   Q_D(const QCefConfig);
   return d->persistUserPreferences_;
 }
+#endif
 
 void
 QCefConfig::setRemoteDebuggingPort(short port)

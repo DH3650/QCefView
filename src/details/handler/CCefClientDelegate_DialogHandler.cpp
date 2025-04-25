@@ -1,15 +1,15 @@
-﻿#include "CCefClientDelegate.h"
+﻿#include "details/CCefClientDelegate.h"
 
 #include <QDebug>
 #include <QSharedPointer>
 #include <QThread>
 
-#include "QCefViewPrivate.h"
-#include "utils/CommonUtils.h"
-#include "utils/ValueConvertor.h"
+#include "details/QCefViewPrivate.h"
+#include "details/utils/CommonUtils.h"
+#include "details/utils/ValueConvertor.h"
 
 bool
-CCefClientDelegate::onFileDialog(CefRefPtr<CefBrowser> browser,
+CCefClientDelegate::onFileDialog(CefRefPtr<CefBrowser>& browser,
                                  CefBrowserHost::FileDialogMode mode,
                                  const CefString& title,
                                  const CefString& default_file_path,
@@ -17,20 +17,23 @@ CCefClientDelegate::onFileDialog(CefRefPtr<CefBrowser> browser,
 #if CEF_VERSION_MAJOR < 102
                                  int selected_accept_filter,
 #endif
-                                 CefRefPtr<CefFileDialogCallback> callback)
+                                 CefRefPtr<CefFileDialogCallback>& callback)
 {
-#if defined(Q_OS_LINUX)
   QMetaObject::invokeMethod(pCefViewPrivate_, [=]() {
+    QStringList filters;
+    if (!accept_filters.empty()) {
+      for (const auto& filter : accept_filters) {
+        filters << "*" + QString::fromStdString(filter.ToString());
+      }
+    }
     pCefViewPrivate_->onFileDialog(mode,
-                                   title,
-                                   default_file_path,
-                                   accept_filters,
+                                   title.ToString().c_str(),
+                                   default_file_path.ToString().c_str(),
+                                   filters,
 #if CEF_VERSION_MAJOR < 102
                                    selected_accept_filter,
 #endif
                                    callback);
   });
   return true;
-#endif
-  return false;
 }

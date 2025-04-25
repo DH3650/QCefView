@@ -14,7 +14,7 @@
 #pragma region qt_headers
 #include <QtCore/qglobal.h>
 #include <QMetaType>
-#pragma endregion qt_headers
+#pragma endregion 
 
 #ifdef QCEFVIEW_STATIC
     // Static library, no need export
@@ -32,12 +32,9 @@
         #endif
     #endif
 #endif
+// clang-format on
 
 // CEF version numbers
-#define CEF_VERSION_MAJOR 119
-#define CEF_VERSION_MINOR 4
-#define CEF_VERSION_PATCH 7
-
-// clang-format on
+#include <CefVersion.h>
 
 #endif // QCEFEVIEW_GLOBAL_H

@@ -4,28 +4,13 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QString>
-#pragma endregion qt_headers
+#pragma endregion
 
 #include <CefViewCoreProtocol.h>
-#include <CefViewWingProcessName.h>
 
 QCefConfigPrivate::QCefConfigPrivate()
 {
   backgroundColor_ = QColor::fromRgba(qRgba(255, 255, 255, 255));
-  userAgent_ = kCefViewDefaultUserAgent;
-
-#if !defined(Q_OS_MACOS)
-  QDir ExeDir = QCoreApplication::applicationDirPath();
-
-  QString strExePath = ExeDir.filePath(kCefViewRenderProcessName);
-  browserSubProcessPath_ = QDir::toNativeSeparators(strExePath).toStdString();
-
-  QString strResPath = ExeDir.filePath(kCefViewResourceDirectoryName);
-  resourceDirectoryPath_ = QDir::toNativeSeparators(strResPath).toStdString();
-
-  QDir ResPath(strResPath);
-  localesDirectoryPath_ = QDir::toNativeSeparators(ResPath.filePath(kCefViewLocalesDirectoryName)).toStdString();
-#endif
 }
 
 void
@@ -55,6 +40,9 @@ QCefConfigPrivate::CopyToCefSettings(const QCefConfig* config, CefSettings* sett
 
   if (config->d_ptr->windowlessRenderingEnabled_.canConvert<int>())
     settings->windowless_rendering_enabled = config->d_ptr->windowlessRenderingEnabled_.toInt();
+
+  if (config->d_ptr->commandLinePassthroughDisabled_.canConvert<int>())
+    settings->command_line_args_disabled = config->d_ptr->commandLinePassthroughDisabled_.toInt();
 
 #if !defined(Q_OS_MACOS)
   if (!config->d_ptr->browserSubProcessPath_.empty())
@@ -90,8 +78,10 @@ QCefConfigPrivate::CopyToCefSettings(const QCefConfig* config, CefSettings* sett
   if (config->d_ptr->persistSessionCookies_.canConvert<int>())
     settings->persist_session_cookies = config->d_ptr->persistSessionCookies_.toInt();
 
+#if CEF_VERSION_MAJOR < 128
   if (config->d_ptr->persistUserPreferences_.canConvert<int>())
     settings->persist_user_preferences = config->d_ptr->persistUserPreferences_.toInt();
+#endif
 
   if (config->d_ptr->backgroundColor_.canConvert<QColor>())
     settings->background_color = config->d_ptr->backgroundColor_.value<QColor>().rgba();
